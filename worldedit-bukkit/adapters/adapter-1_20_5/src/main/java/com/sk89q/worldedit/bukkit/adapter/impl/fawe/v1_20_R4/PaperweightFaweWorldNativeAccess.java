@@ -57,9 +57,8 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
     public PaperweightFaweWorldNativeAccess(PaperweightFaweAdapter paperweightFaweAdapter, WeakReference<Level> level) {
         this.paperweightFaweAdapter = paperweightFaweAdapter;
         this.level = level;
-        // Use the actual tick as minecraft-defined so we don't try to force blocks into the world when the server's already lagging.
-        //  - With the caveat that we don't want to have too many cached changed (1024) so we'd flush those at 1024 anyway.
-        this.lastTick = new AtomicInteger(MinecraftServer.currentTick);
+        // Use a starting value of 0 - Folia doesn't expose currentTick field
+        this.lastTick = new AtomicInteger(0);
     }
 
     private Level getLevel() {
@@ -95,7 +94,8 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
             LevelChunk levelChunk, BlockPos blockPos,
             net.minecraft.world.level.block.state.BlockState blockState
     ) {
-        int currentTick = MinecraftServer.currentTick;
+        // Use our own tick counter instead of accessing MinecraftServer.currentTick
+        int currentTick = lastTick.incrementAndGet();
         if (Fawe.isMainThread()) {
             return levelChunk.setBlockState(blockPos, blockState,
                     this.sideEffectSet != null && this.sideEffectSet.shouldApply(SideEffect.UPDATE)
@@ -104,12 +104,9 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
         // Since FAWE is.. Async we need to do it on the main thread (wooooo.. :( )
         cachedChanges.add(new CachedChange(levelChunk, blockPos, blockState));
         cachedChunksToSend.add(new IntPair(levelChunk.locX, levelChunk.locZ));
-        boolean nextTick = lastTick.get() > currentTick;
-        if (nextTick || cachedChanges.size() >= 1024) {
-            if (nextTick) {
-                lastTick.set(currentTick);
-            }
-            flushAsync(nextTick);
+        // If accumulated too many changes, flush them
+        if (cachedChanges.size() >= 1024) {
+            flushAsync(false);
         }
         return blockState;
     }

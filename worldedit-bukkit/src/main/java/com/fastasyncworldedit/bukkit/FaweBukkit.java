@@ -33,6 +33,7 @@ import com.sk89q.worldedit.extension.platform.Capability;
 import com.sk89q.worldedit.internal.util.LogManagerCompat;
 import io.papermc.lib.PaperLib;
 import io.papermc.paper.datapack.Datapack;
+import io.papermc.paper.threadedregions.scheduler.RegionScheduler;
 import org.apache.logging.log4j.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
@@ -89,7 +90,7 @@ public class FaweBukkit implements IFawe, Listener {
         platformAdapter = new NMSAdapter();
 
         //PlotSquared support is limited to Spigot/Paper as of 02/20/2020
-        TaskManager.taskManager().later(this::setupPlotSquared, 0);
+        TaskManager.taskManager().later(this::setupPlotSquared, 1);
 
         // Registered delayed Event Listeners
         TaskManager.taskManager().task(() -> {
@@ -258,6 +259,12 @@ public class FaweBukkit implements IFawe, Listener {
             org.bukkit.World world = event.getWorld();
             world.setKeepSpawnInMemory(false);
         }
+        initializeWorldDependentFeatures();
+    }
+
+    private void initializeWorldDependentFeatures() {
+        LOGGER.info("Initializing world-dependent features...");
+        // Add any specific initialization logic here
     }
 
     public synchronized <T> T createWorldUnloaded(Supplier<T> task) {

@@ -48,9 +48,13 @@ import com.sk89q.worldedit.util.formatting.text.format.TextColor;
 import com.sk89q.worldedit.world.World;
 import com.sk89q.worldedit.world.block.BaseBlock;
 import com.sk89q.worldedit.world.block.BlockStateHolder;
+import com.sk89q.worldedit.world.block.BlockType;
 import com.sk89q.worldedit.world.block.BlockTypes;
 import com.sk89q.worldedit.world.gamemode.GameMode;
 import com.sk89q.worldedit.world.gamemode.GameModes;
+import com.sk89q.worldedit.world.item.ItemType;
+import com.fastasyncworldedit.core.Fawe;
+import com.fastasyncworldedit.core.FaweCache;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -61,6 +65,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.permissions.PermissionAttachment;
 import org.enginehub.linbus.tree.LinCompoundTag;
+import org.enginehub.piston.converter.SuggestionHelper;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -71,6 +76,11 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static com.google.common.base.Preconditions.checkNotNull;
+
+/**
+ * A wrapper for a Bukkit player that implements {@link com.sk89q.worldedit.entity.Player}.
+ */
 public class BukkitPlayer extends AbstractPlayerActor {
 
     private final Player player;
@@ -156,36 +166,112 @@ public class BukkitPlayer extends AbstractPlayerActor {
         return player.getDisplayName();
     }
 
-    //FAWE start
     @Override
     public void giveItem(BaseItemStack itemStack) {
+        checkNotNull(itemStack);
         final PlayerInventory inv = player.getInventory();
+        final ItemStack item = player.getInventory().getItemInMainHand();
         ItemStack newItem = BukkitAdapter.adapt(itemStack);
-        TaskManager.taskManager().sync(() -> {
-            if (itemStack.getType().id().equalsIgnoreCase(WorldEdit.getInstance().getConfiguration().wandItem)) {
-                inv.remove(newItem);
-            }
-            final ItemStack item = player.getInventory().getItemInMainHand();
-            player.getInventory().setItemInMainHand(newItem);
-            HashMap<Integer, ItemStack> overflow = inv.addItem(item);
-            if (!overflow.isEmpty()) {
-                for (Map.Entry<Integer, ItemStack> entry : overflow.entrySet()) {
-                    ItemStack stack = entry.getValue();
-                    if (stack.getType() != Material.AIR && stack.getAmount() > 0) {
-                        Item dropped = player.getWorld().dropItem(player.getLocation(), stack);
-                        PlayerDropItemEvent event = new PlayerDropItemEvent(player, dropped);
-                        Bukkit.getPluginManager().callEvent(event);
-                        if (event.isCancelled()) {
-                            dropped.remove();
+
+        if (Fawe.isMainThread()) {
+            // If already on main thread, just run the code directly
+            try {
+                if (itemStack.getType().getId().equalsIgnoreCase(WorldEdit.getInstance().getConfiguration().wandItem)) {
+                    inv.remove(newItem);
+                }
+                player.getInventory().setItemInMainHand(newItem);
+                HashMap<Integer, ItemStack> overflow = inv.addItem(item);
+                if (!overflow.isEmpty()) {
+                    for (Map.Entry<Integer, ItemStack> entry : overflow.entrySet()) {
+                        ItemStack stack = entry.getValue();
+                        if (stack.getType() != Material.AIR && stack.getAmount() > 0) {
+                            Item dropped = player.getWorld().dropItem(player.getLocation(), stack);
+                            PlayerDropItemEvent event = new PlayerDropItemEvent(player, dropped);
+                            Bukkit.getPluginManager().callEvent(event);
+                            if (event.isCancelled()) {
+                                dropped.remove();
+                            }
                         }
                     }
                 }
+            } catch (Exception e) {
+                plugin.getLogger().warning("Error giving item to player: " + (e.getMessage() != null ? e.getMessage() : e.toString()));
             }
-            player.updateInventory();
-            return null;
-        });
+        } else {
+            // Check if we're on Folia
+            boolean isFolia = false;
+            try {
+                Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
+                isFolia = true;
+            } catch (ClassNotFoundException e) {
+                // Not Folia
+            }
+            
+            try {
+                // Make sure plugin is not null
+                if (plugin == null) {
+                    WorldEditPlugin.getInstance().getLogger().warning("Plugin instance is null in giveItem");
+                    return;
+                }
+                
+                if (isFolia) {
+                    // Use Folia's entity-specific scheduler
+                    Bukkit.getServer().getRegionScheduler().execute(plugin, player.getLocation(), () -> {
+                        try {
+                            if (itemStack.getType().getId().equalsIgnoreCase(WorldEdit.getInstance().getConfiguration().wandItem)) {
+                                inv.remove(newItem);
+                            }
+                            player.getInventory().setItemInMainHand(newItem);
+                            HashMap<Integer, ItemStack> overflow = inv.addItem(item);
+                            if (!overflow.isEmpty()) {
+                                for (Map.Entry<Integer, ItemStack> entry : overflow.entrySet()) {
+                                    ItemStack stack = entry.getValue();
+                                    if (stack.getType() != Material.AIR && stack.getAmount() > 0) {
+                                        Item dropped = player.getWorld().dropItem(player.getLocation(), stack);
+                                        PlayerDropItemEvent event = new PlayerDropItemEvent(player, dropped);
+                                        Bukkit.getPluginManager().callEvent(event);
+                                        if (event.isCancelled()) {
+                                            dropped.remove();
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            plugin.getLogger().warning("Error giving item to player in Folia: " + e.getMessage());
+                        }
+                    });
+                } else {
+                    // Use standard Bukkit scheduler
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        try {
+                            if (itemStack.getType().getId().equalsIgnoreCase(WorldEdit.getInstance().getConfiguration().wandItem)) {
+                                inv.remove(newItem);
+                            }
+                            player.getInventory().setItemInMainHand(newItem);
+                            HashMap<Integer, ItemStack> overflow = inv.addItem(item);
+                            if (!overflow.isEmpty()) {
+                                for (Map.Entry<Integer, ItemStack> entry : overflow.entrySet()) {
+                                    ItemStack stack = entry.getValue();
+                                    if (stack.getType() != Material.AIR && stack.getAmount() > 0) {
+                                        Item dropped = player.getWorld().dropItem(player.getLocation(), stack);
+                                        PlayerDropItemEvent event = new PlayerDropItemEvent(player, dropped);
+                                        Bukkit.getPluginManager().callEvent(event);
+                                        if (event.isCancelled()) {
+                                            dropped.remove();
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            plugin.getLogger().warning("Error giving item to player: " + e.getMessage());
+                        }
+                    });
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("Error scheduling item give task: " + e.getMessage());
+            }
+        }
     }
-    //FAWE end
 
     @Deprecated
     @Override
@@ -221,10 +307,7 @@ public class BukkitPlayer extends AbstractPlayerActor {
 
     @Override
     public void print(Component component) {
-        //FAWE start - Add FAWE prefix to all messages
-        component = Caption.color(TranslatableComponent.of("prefix", component), getLocale());
-        //FAWE end
-        TextAdapter.sendMessage(player, WorldEditText.format(component, getLocale()));
+        TextAdapter.sendMessage(player, component);
     }
 
     @Override
@@ -338,13 +421,11 @@ public class BukkitPlayer extends AbstractPlayerActor {
 
     @Override
     public com.sk89q.worldedit.util.Location getLocation() {
-        Location nativeLocation = player.getLocation();
-        Vector3 position = BukkitAdapter.asVector(nativeLocation);
+        org.bukkit.Location nativeLocation = player.getLocation();
         return new com.sk89q.worldedit.util.Location(
-                getWorld(),
-                position,
-                nativeLocation.getYaw(),
-                nativeLocation.getPitch()
+            getWorld(),
+            nativeLocation.getX(), nativeLocation.getY(), nativeLocation.getZ(),
+            nativeLocation.getYaw(), nativeLocation.getPitch()
         );
     }
 
@@ -455,4 +536,10 @@ public class BukkitPlayer extends AbstractPlayerActor {
         super.unregister();
     }
     //FAWE end
+
+    @Override
+    public void setPosition(Vector3 pos, float pitch, float yaw) {
+        org.bukkit.Location loc = new org.bukkit.Location(player.getWorld(), pos.x(), pos.y(), pos.z(), yaw, pitch);
+        player.teleport(loc);
+    }
 }

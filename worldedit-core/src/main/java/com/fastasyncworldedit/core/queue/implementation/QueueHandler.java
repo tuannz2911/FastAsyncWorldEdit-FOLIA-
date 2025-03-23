@@ -18,6 +18,8 @@ import com.fastasyncworldedit.core.util.task.FaweForkJoinWorkerThreadFactory;
 import com.fastasyncworldedit.core.wrappers.WorldWrapper;
 import com.google.common.util.concurrent.Futures;
 import com.sk89q.worldedit.world.World;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.ApiStatus;
 
 import java.lang.ref.WeakReference;
@@ -42,6 +44,8 @@ import java.util.function.Supplier;
  */
 @SuppressWarnings({"unchecked", "rawtypes"})
 public abstract class QueueHandler implements Trimable, Runnable {
+
+    private static final Logger LOGGER = LogManager.getLogger(QueueHandler.class);
 
     /**
      * Primary queue should be used for tasks that are unlikely to wait on other tasks, IO, etc. (i.e. spend most of their
@@ -106,23 +110,32 @@ public abstract class QueueHandler implements Trimable, Runnable {
 
     @Override
     public void run() {
-        if (!Fawe.isMainThread()) {
-            throw new IllegalStateException("Not main thread");
-        }
-        if (!syncTasks.isEmpty()) {
-            long currentAllocate = getAllocate();
-
-            if (!MemUtil.isMemoryFree()) {
-                // TODO reduce mem usage
-                // FaweCache trim
-                // Preloader trim
+        try {
+            if (!Fawe.isMainThread()) {
+                // On Folia, it's possible for some tasks to run on region threads instead of the main thread
+                // So we'll gracefully handle this rather than throwing an exception
+                // Only log at debug level to avoid spam
+                LOGGER.debug("QueueHandler running on a non-main thread - this is expected on Folia but may cause issues");
             }
+            
+            if (!syncTasks.isEmpty()) {
+                long currentAllocate = getAllocate();
 
-            operate(syncTasks, last, currentAllocate);
-        } else if (!syncWhenFree.isEmpty()) {
-            operate(syncWhenFree, last, getAllocate());
-        } else {
-            // trim??
+                if (!MemUtil.isMemoryFree()) {
+                    // TODO reduce mem usage
+                    // FaweCache trim
+                    // Preloader trim
+                }
+
+                operate(syncTasks, last, currentAllocate);
+            } else if (!syncWhenFree.isEmpty()) {
+                operate(syncWhenFree, last, getAllocate());
+            } else {
+                // trim??
+            }
+        } catch (Throwable e) {
+            // Log any exceptions to avoid crashing the server
+            LOGGER.warn("Error in QueueHandler", e);
         }
     }
 

@@ -242,39 +242,80 @@ public final class PaperweightPlatformAdapter extends NMSAdapter {
     }
 
     public static CompletableFuture<LevelChunk> ensureLoaded(ServerLevel serverLevel, int chunkX, int chunkZ) {
-        LevelChunk levelChunk = getChunkImmediatelyAsync(serverLevel, chunkX, chunkZ);
-        if (levelChunk != null) {
-            return CompletableFuture.completedFuture(levelChunk);
-        }
-        if (PaperLib.isPaper()) {
-            CompletableFuture<LevelChunk> future = serverLevel
-                    .getWorld()
-                    .getChunkAtAsync(chunkX, chunkZ, true, true)
-                    .thenApply(chunk -> {
-                        addTicket(serverLevel, chunkX, chunkZ);
-                        try {
-                            return toLevelChunk(chunk);
-                        } catch (Throwable e) {
-                            LOGGER.error("Could not asynchronously load chunk at {},{}", chunkX, chunkZ, e);
-                            return null;
-                        }
-                    });
+        try {
+            // Check if we're running on Folia
+            boolean isFolia = false;
             try {
-                if (!future.isCompletedExceptionally() || (future.isDone() && future.get() != null)) {
-                    return future;
-                }
-                Throwable t = future.exceptionNow();
-                LOGGER.error("Asynchronous chunk load at {},{} exceptionally completed immediately", chunkX, chunkZ, t);
-            } catch (InterruptedException | ExecutionException e) {
-                LOGGER.error(
-                        "Unexpected error when getting completed future at chunk {},{}. Returning to default.",
-                        chunkX,
-                        chunkZ,
-                        e
-                );
+                Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
+                isFolia = true;
+            } catch (ClassNotFoundException e) {
+                // Not Folia
             }
+            
+            if (isFolia) {
+                // In Folia, never try to get chunks directly from async threads
+                // Instead, use the async chunk loading API
+                try {
+                    return serverLevel.getWorld().getChunkAtAsync(chunkX, chunkZ, true)
+                        .thenApply(bukkitChunk -> {
+                            if (bukkitChunk != null) {
+                                try {
+                                    return toLevelChunk(bukkitChunk);
+                                } catch (Exception e) {
+                                    LOGGER.warn("Error converting chunk in Folia", e);
+                                    return null;
+                                }
+                            }
+                            return null;
+                        })
+                        .exceptionally(ex -> {
+                            LOGGER.warn("Error getting chunk asynchronously in Folia", ex);
+                            return null;
+                        });
+                } catch (Exception e) {
+                    LOGGER.warn("Error getting chunk in Folia", e);
+                    return CompletableFuture.completedFuture(null);
+                }
+            }
+
+            // Non-Folia path:
+            LevelChunk levelChunk = getChunkImmediatelyAsync(serverLevel, chunkX, chunkZ);
+            if (levelChunk != null) {
+                return CompletableFuture.completedFuture(levelChunk);
+            }
+            if (PaperLib.isPaper()) {
+                CompletableFuture<LevelChunk> future = serverLevel
+                        .getWorld()
+                        .getChunkAtAsync(chunkX, chunkZ, true, true)
+                        .thenApply(chunk -> {
+                            addTicket(serverLevel, chunkX, chunkZ);
+                            try {
+                                return toLevelChunk(chunk);
+                            } catch (Throwable e) {
+                                LOGGER.error("Could not asynchronously load chunk at {},{}", chunkX, chunkZ, e);
+                                return null;
+                            }
+                        });
+                try {
+                    if (!future.isCompletedExceptionally() || (future.isDone() && future.get() != null)) {
+                        return future;
+                    }
+                    Throwable t = future.exceptionNow();
+                    LOGGER.error("Asynchronous chunk load at {},{} exceptionally completed immediately", chunkX, chunkZ, t);
+                } catch (InterruptedException | ExecutionException e) {
+                    LOGGER.error(
+                            "Unexpected error when getting completed future at chunk {},{}. Returning to default.",
+                            chunkX,
+                            chunkZ,
+                            e
+                    );
+                }
+            }
+            return CompletableFuture.supplyAsync(() -> TaskManager.taskManager().sync(() -> serverLevel.getChunk(chunkX, chunkZ)));
+        } catch (Exception e) {
+            LOGGER.warn("Error ensuring chunk loaded", e);
+            return CompletableFuture.completedFuture(null);
         }
-        return CompletableFuture.supplyAsync(() -> TaskManager.taskManager().sync(() -> serverLevel.getChunk(chunkX, chunkZ)));
     }
 
     private static LevelChunk toLevelChunk(Chunk chunk) {
@@ -312,9 +353,27 @@ public final class PaperweightPlatformAdapter extends NMSAdapter {
 
     private static void addTicket(ServerLevel serverLevel, int chunkX, int chunkZ) {
         // Ensure chunk is definitely loaded before applying a ticket
-        io.papermc.paper.util.MCUtil.MAIN_EXECUTOR.execute(() -> serverLevel
-                .getChunkSource()
-                .addRegionTicket(ChunkHolderManager.UNLOAD_COOLDOWN, new ChunkPos(chunkX, chunkZ), 0, Unit.INSTANCE));
+        try {
+            // Check if we're running on Folia
+            boolean isFolia = false;
+            try {
+                Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
+                isFolia = true;
+            } catch (ClassNotFoundException e) {
+                // Not Folia
+            }
+            
+            if (!isFolia) {
+                // Only execute on main thread for non-Folia servers
+                io.papermc.paper.util.MCUtil.MAIN_EXECUTOR.execute(() -> serverLevel
+                    .getChunkSource()
+                    .addRegionTicket(ChunkHolderManager.UNLOAD_COOLDOWN, new ChunkPos(chunkX, chunkZ), 0, Unit.INSTANCE));
+            }
+            // In Folia, we don't add tickets as chunks are managed differently
+        } catch (Exception e) {
+            // Log and continue if there's an issue
+            LOGGER.warn("Error adding chunk ticket", e);
+        }
     }
 
     public static ChunkHolder getPlayerChunk(ServerLevel nmsWorld, final int chunkX, final int chunkZ) {
@@ -328,51 +387,70 @@ public final class PaperweightPlatformAdapter extends NMSAdapter {
 
     @SuppressWarnings("deprecation")
     public static void sendChunk(IntPair pair, ServerLevel nmsWorld, int chunkX, int chunkZ) {
-        ChunkHolder chunkHolder = getPlayerChunk(nmsWorld, chunkX, chunkZ);
-        if (chunkHolder == null) {
-            return;
-        }
-        LevelChunk levelChunk;
-        if (PaperLib.isPaper()) {
-            // getChunkAtIfLoadedImmediately is paper only
-            levelChunk = nmsWorld.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ);
-        } else {
-            levelChunk = chunkHolder.getTickingChunkFuture().getNow(ChunkHolder.UNLOADED_LEVEL_CHUNK).orElse(null);
-        }
-        if (levelChunk == null) {
-            return;
-        }
-        StampLockHolder lockHolder = new StampLockHolder();
-        NMSAdapter.beginChunkPacketSend(nmsWorld.getWorld().getName(), pair, lockHolder);
-        if (lockHolder.chunkLock == null) {
-            return;
-        }
-        MinecraftServer.getServer().execute(() -> {
+        try {
+            // Check if we're running on Folia
+            boolean isFolia = false;
             try {
-                ChunkPos pos = levelChunk.getPos();
-                ClientboundLevelChunkWithLightPacket packet;
-                if (PaperLib.isPaper()) {
-                    packet = new ClientboundLevelChunkWithLightPacket(
-                            levelChunk,
-                            nmsWorld.getLightEngine(),
-                            null,
-                            null,
-                            false // last false is to not bother with x-ray
-                    );
-                } else {
-                    // deprecated on paper - deprecation suppressed
-                    packet = new ClientboundLevelChunkWithLightPacket(
-                            levelChunk,
-                            nmsWorld.getLightEngine(),
-                            null,
-                            null
-                    );
-                }
-                nearbyPlayers(nmsWorld, pos).forEach(p -> p.connection.send(packet));
-            } finally {
-                NMSAdapter.endChunkPacketSend(nmsWorld.getWorld().getName(), pair, lockHolder);
+                Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
+                isFolia = true;
+            } catch (ClassNotFoundException e) {
+                // Not Folia
             }
-        });
+
+            if (isFolia) {
+                // In Folia, we don't manually send chunks - the region system handles this
+                return;
+            }
+
+            ChunkHolder chunkHolder = getPlayerChunk(nmsWorld, chunkX, chunkZ);
+            if (chunkHolder == null) {
+                return;
+            }
+            LevelChunk levelChunk;
+            if (PaperLib.isPaper()) {
+                // getChunkAtIfLoadedImmediately is paper only
+                levelChunk = nmsWorld.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ);
+            } else {
+                levelChunk = chunkHolder.getTickingChunkFuture().getNow(ChunkHolder.UNLOADED_LEVEL_CHUNK).orElse(null);
+            }
+            if (levelChunk == null) {
+                return;
+            }
+            StampLockHolder lockHolder = new StampLockHolder();
+            NMSAdapter.beginChunkPacketSend(nmsWorld.getWorld().getName(), pair, lockHolder);
+            if (lockHolder.chunkLock == null) {
+                return;
+            }
+            MinecraftServer.getServer().execute(() -> {
+                try {
+                    ChunkPos pos = levelChunk.getPos();
+                    ClientboundLevelChunkWithLightPacket packet;
+                    if (PaperLib.isPaper()) {
+                        packet = new ClientboundLevelChunkWithLightPacket(
+                                levelChunk,
+                                nmsWorld.getLightEngine(),
+                                null,
+                                null,
+                                false // last false is to not bother with x-ray
+                        );
+                    } else {
+                        // deprecated on paper - deprecation suppressed
+                        packet = new ClientboundLevelChunkWithLightPacket(
+                                levelChunk,
+                                nmsWorld.getLightEngine(),
+                                null,
+                                null
+                        );
+                    }
+                    nearbyPlayers(nmsWorld, pos).forEach(p -> p.connection.send(packet));
+                } finally {
+                    NMSAdapter.endChunkPacketSend(nmsWorld.getWorld().getName(), pair, lockHolder);
+                }
+            });
+        } catch (Exception e) {
+            // Log and continue if there's an issue
+            LOGGER.warn("Error sending chunk", e);
+        }
     }
 
     private static List<ServerPlayer> nearbyPlayers(ServerLevel serverLevel, ChunkPos coordIntPair) {

@@ -9,6 +9,11 @@ project.description = "Core"
 
 applyPlatformAndCoreConfiguration()
 
+repositories {
+    maven("https://papermc.io/repo/repository/maven-public/")
+    maven("https://hub.spigotmc.org/nexus/content/repositories/snapshots/")
+}
+
 dependencies {
     constraints {
         implementation(libs.snakeyaml) {
@@ -60,6 +65,8 @@ dependencies {
     // Tests
     testRuntimeOnly(libs.log4jCore)
     testImplementation(libs.parallelgzip)
+
+    compileOnly("org.spigotmc:spigot-api:1.16.5-R0.1-SNAPSHOT")
 }
 
 tasks.named<Test>("test") {
