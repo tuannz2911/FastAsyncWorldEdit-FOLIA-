@@ -1,0 +1,24 @@
+name: Buildd
+on:
+  push:
+    branches:
+      - main
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          cache: gradle
+          java-version: 21
+      - name: Build Project
+        run: ./gradlew build --no-daemon
+      - name: Archive Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Built-Artifacts
+          path: build/libs/*.jar
