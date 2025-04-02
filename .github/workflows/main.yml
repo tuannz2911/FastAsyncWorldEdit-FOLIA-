@@ -16,7 +16,7 @@ jobs:
           cache: gradle
           java-version: 21
       - name: Build Project
-        run: ./gradlew build --no-daemon
+        run: ./gradlew clean build --no-daemon
       - name: Archive Artifacts
         uses: actions/upload-artifact@v4
         with:
