@@ -21,4 +21,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Built-Artifacts
-          path: build/libs/*.jar
+          path: worldedit-bukkit/build/libs/*.jar
