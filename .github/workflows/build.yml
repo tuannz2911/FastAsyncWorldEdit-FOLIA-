@@ -1,4 +1,4 @@
-name: Build
+name: Buildd
 on:
   push:
     branches:
